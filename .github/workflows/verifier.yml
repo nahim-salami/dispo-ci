@@ -15,7 +15,7 @@ on:
       suite:
         description: Ce qu'il faut vérifier
         type: choice
-        options: [tout, code, web]
+        options: [tout, code, web, maquette]
         default: tout
 
 permissions:
@@ -118,4 +118,47 @@ jobs:
         with:
           name: resultat-web
           path: resultat-web.chiffre
+          retention-days: 7
+
+  maquette:
+    name: Maquette dans Chromium
+    if: inputs.suite == 'tout' || inputs.suite == 'maquette'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      JOURNAL: ${{ github.workspace }}/journal.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DEPOT_PRIVE }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CLE_DEPOT_PRIVE }}
+          persist-credentials: false
+          path: code
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: code/.nvmrc
+      - name: Étapes
+        working-directory: code
+        env:
+          ETAPE: ${{ github.workspace }}/outils/etape.sh
+          CAPTURES: ${{ github.workspace }}/captures
+        run: bash outils/ci/verifier-maquette.sh
+      - name: Chiffrer le résultat
+        if: always()
+        env:
+          CLE: ${{ secrets.CLE_JOURNAUX }}
+        run: |
+          mkdir -p captures
+          tar czf resultat.tgz journal.txt captures 2>/dev/null || tar czf resultat.tgz captures
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:CLE -in resultat.tgz -out resultat-maquette.chiffre
+          rm -rf resultat.tgz journal.txt captures
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resultat-maquette
+          path: resultat-maquette.chiffre
           retention-days: 7
