@@ -1,0 +1,121 @@
+name: Vérifier
+
+# Exécuteur de CI. Ce dépôt ne contient aucun code source : chaque exécution
+# récupère le code depuis un dépôt privé (clé de déploiement en lecture seule),
+# le vérifie, et n'affiche publiquement que « ✓ étape » ou « ✗ étape ».
+# Le détail (journaux, captures) est chiffré avant d'être joint au résultat.
+# Déclenchement manuel uniquement : gh workflow run verifier.yml -f ref=<branche> -f suite=<suite>
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branche ou commit du dépôt privé
+        required: true
+        default: main
+      suite:
+        description: Ce qu'il faut vérifier
+        type: choice
+        options: [tout, code, web]
+        default: tout
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verifier-${{ inputs.ref }}-${{ inputs.suite }}
+  cancel-in-progress: true
+
+jobs:
+  code:
+    name: Code (lint, types, tests, construction, audit)
+    if: inputs.suite == 'tout' || inputs.suite == 'code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      JOURNAL: ${{ github.workspace }}/journal.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DEPOT_PRIVE }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CLE_DEPOT_PRIVE }}
+          persist-credentials: false
+          path: code
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: code/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: code/.nvmrc
+          cache: pnpm
+          cache-dependency-path: code/pnpm-lock.yaml
+      - name: Étapes
+        working-directory: code
+        env:
+          ETAPE: ${{ github.workspace }}/outils/etape.sh
+        run: bash outils/ci/verifier-code.sh
+      - name: Chiffrer le résultat
+        if: always()
+        env:
+          CLE: ${{ secrets.CLE_JOURNAUX }}
+        run: |
+          tar czf resultat.tgz journal.txt 2>/dev/null || tar czf resultat.tgz --files-from /dev/null
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:CLE -in resultat.tgz -out resultat-code.chiffre
+          rm -f resultat.tgz journal.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resultat-code
+          path: resultat-code.chiffre
+          retention-days: 7
+
+  web:
+    name: Application web dans Chromium
+    if: inputs.suite == 'tout' || inputs.suite == 'web'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      JOURNAL: ${{ github.workspace }}/journal.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.DEPOT_PRIVE }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CLE_DEPOT_PRIVE }}
+          persist-credentials: false
+          path: code
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: code/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: code/.nvmrc
+          cache: pnpm
+          cache-dependency-path: code/pnpm-lock.yaml
+      - name: Étapes
+        working-directory: code
+        env:
+          ETAPE: ${{ github.workspace }}/outils/etape.sh
+          CAPTURES: ${{ github.workspace }}/captures
+        run: bash outils/ci/verifier-web.sh
+      - name: Chiffrer le résultat
+        if: always()
+        env:
+          CLE: ${{ secrets.CLE_JOURNAUX }}
+        run: |
+          mkdir -p captures
+          tar czf resultat.tgz journal.txt captures 2>/dev/null || tar czf resultat.tgz captures
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:CLE -in resultat.tgz -out resultat-web.chiffre
+          rm -rf resultat.tgz journal.txt captures
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resultat-web
+          path: resultat-web.chiffre
+          retention-days: 7
